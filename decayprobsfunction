@@ -1,0 +1,99 @@
+import shapely
+from shapely.geometry import Polygon, Point, LineString
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.integrate import quad
+
+# --- Geometry helper functions ---
+
+def circular_arc(center, radius, start_angle, end_angle, num_points):
+    angles = np.linspace(start_angle, end_angle, num_points)
+    return [(center[0] + radius * np.cos(angle), center[1] + radius * np.sin(angle)) for angle in angles]
+
+def cubiroot(first, last, offset, amp, num_points):
+    points = np.linspace(first[1], last[1], num_points)
+    return [(amp * (p - offset[1])**3 + offset[0], p) for p in points]
+
+# --- Build cavern geometry ---
+
+inside1 = [(-12,12.1), (-13,12.1), (-14,12.1), (-15,12.1), (-16,12.1), (-17,12.1), (-18,12.1)]
+outer1  = [(-12,14.9), (-13,14.9), (-14,14.9), (-15,14.9), (-16,14.9), (-17,14.9), (-18,14.9)]
+
+inside2 = circular_arc((-18,6.5), 5.6, np.radians(90), np.radians(180), 15)
+outer2  = circular_arc((-18,6.5), 8.4, np.radians(90), np.radians(180), 15)
+
+inside3 = [(-23.6,y) for y in np.arange(5.5, -4.5, -1.0)]
+outer3  = [(-26.4,y) for y in np.arange(5.5, -4.5, -1.0)]
+
+inside4 = circular_arc((-18,-3.5), 5.6, np.radians(180), np.radians(270), 15)
+outer4  = circular_arc((-18,-3.5), 8.4, np.radians(180), np.radians(270), 15)
+
+inside5 = [(-18,-9.1), (5,-9.1)]
+outer5  = [(-18,-11.9), (6,-11.9)]
+
+inside6 = cubiroot((6,-8.5), (27,5.5), (22,-0.5), 0.03, 20)
+outer6  = cubiroot((8,-10.9), (27.9,2.7), (25,-3), 0.03, 20)
+
+#From top left of the tunnel around in a counter clockwise pattern
+outer = outer1 + outer2 + outer3 + outer4 + outer5 + outer6
+inside = inside1 + inside2 + inside3 + inside4 + inside5 + inside6
+
+c_detector = Polygon(outer + inside[::-1])
+origin = Point(0, 0)
+
+
+#slicing the geometry 
+#getting the L1 distance per angle section
+phi = np.linspace(-235, 15, 100)
+deltaphi = np.abs(np.diff(phi))
+
+xarr, yarr, L1 = [], [], []
+
+for i in range(len(phi)):
+    r = 30
+    x = r * np.cos(np.radians(phi[i]))
+    y = r * np.sin(np.radians(phi[i]))
+    xarr.append(x)
+    yarr.append(y)
+
+    if i != 0:
+        wedge = Polygon([(0, 0), (xarr[i-1], yarr[i-1]), (xarr[i], yarr[i])])
+        intersection = shapely.intersection(c_detector, wedge)
+        dist = shapely.distance(origin, intersection)
+        L1.append(dist)
+
+L1 = np.array(L1)
+
+def decay_integrand(L, d):
+    return (1 / d) * np.exp(-L / d)
+
+def exact_estimate(d):
+    Estimate = 2.8/(4*np.pi*d)*deltaphi*np.exp(-L1/d)
+    
+    Exact = []
+    for i in range(len(phi)-1):
+        angle = deltaphi[i]
+        detector_integral, _ = quad(decay_integrand,L1[i],L1[i]+2.8,args=(d,))
+        prob = angle*detector_integral/(4*np.pi)
+        Exact.append(prob)
+    Exact = np.array(Exact)
+
+    plt.figure(figsize=(10, 4))
+    plt.plot(phi[:-1], Estimate, label='Estimate', color='blue')
+    plt.plot(phi[:-1], Exact, label='Exact', color='red', linestyle='--')
+    plt.xlabel("Phi (degrees)")
+    plt.ylabel("Probability")
+    plt.title(f"Comparison: Estimate vs Exact (d = {d} m)")
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+#d = 15  # lifetime in meters
+
+# call function for any lifetime d
+exact_estimate(1)
+exact_estimate(10)
+exact_estimate(15)
+exact_estimate(50)
+exact_estimate(100)
