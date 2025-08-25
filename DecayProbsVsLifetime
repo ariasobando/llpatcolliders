@@ -1,0 +1,176 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from shapely.geometry import Polygon, Point
+
+# Helper functions
+
+def circular_arc(center, radius, start_angle, end_angle, num_points):
+    """Generate points along a circular arc."""
+    angles = np.linspace(start_angle, end_angle, num_points)
+    return [
+        (
+            center[0] + radius * np.cos(angle),
+            center[1] + radius * np.sin(angle)
+        )
+        for angle in angles
+    ]
+
+def arctan(center, amp, start, stop, points):
+    """Generate points along an arctangent curve."""
+    angles = np.linspace(start, stop, points)
+    return [
+        (
+            center[1] + np.radians(angle),
+            center[0] + amp * np.arctan(np.radians(angle) - center[1])
+        )
+        for angle in angles
+    ]
+
+# Define tunnel geometry (outer and inner boundary)
+
+inside1 = [(-12, 12.1), (-13, 12.1), (-14, 12.1), (-15, 12.1), (-16, 12.1), (-17, 12.1), (-18, 12.1)]
+outer1 = [(-12, 14.9), (-13, 14.9), (-14, 14.9), (-15, 14.9), (-16, 14.9), (-17, 14.9), (-18, 14.9)]
+
+inside2 = circular_arc((-18, 6.5), 5.6, np.radians(90), np.radians(180), 15)
+outer2 = circular_arc((-18, 6.5), 5.6 + 2.8, np.radians(90), np.radians(180), 15)
+
+inside3 = [(-23.6, y) for y in np.arange(5.5, -4.5, -1.0)]
+outer3 = [(-26.4, y) for y in np.arange(5.5, -4.5, -1.0)]
+
+inside4 = circular_arc((-18, -3.5), 5.6, np.radians(180), np.radians(270), 15)
+outer4 = circular_arc((-18, -3.5), 5.6 + 2.8, np.radians(180), np.radians(270), 15)
+
+inside5 = [(-18, -9.1), (2, -9.1)]
+outer5 = [(-18, -11.9), (2, -11.9)]
+
+inside6 = arctan((-2.5, 2), 6.5, 90, 270, 20)
+outer6 = arctan((-4.48, 0.02), 6.5, 90, 270, 20)
+
+# Combine all parts to define detector polygon
+outer = outer1 + outer2 + outer3 + outer4 + outer5  # + outer6 if desired
+inside = inside1 + inside2 + inside3 + inside4 + inside5  # + inside6 if desired
+
+c_detector = Polygon(outer + inside[::-1])  # Full polygon region
+
+#/
+
+df = pd.read_csv("LLP.csv")
+
+# show first few rows
+print(df.head())
+
+print("\n")
+# show column names to confirm formatting
+#print("Columns:", df.columns.tolist())
+
+# convert eta to theta
+df['theta'] = 2 * np.arctan(np.exp(-df['eta']))
+
+# convert to px, py, pz
+df['px'] = df['momentum'] * np.sin(df['theta']) * np.cos(df['phi'])
+df['py'] = df['momentum'] * np.sin(df['theta']) * np.sin(df['phi'])
+df['pz'] = df['momentum'] * np.cos(df['theta'])
+
+# show the first few to check
+print(df[['event', 'id', 'px', 'py', 'pz']].head())
+
+print("\n")
+
+grouped = df.groupby('event')
+
+# initialize empty array to store momentum vectors of each llp (as unit vectors)
+llp_vectors = []
+
+# Example: Loop over each event pair
+for event_id, group in grouped:
+    if len(group) != 2:
+        print(f"Warning: Event {event_id} does not have 2 particles!")
+        continue
+
+    p1 = group.iloc[0]
+    p2 = group.iloc[1]
+
+    # print their px, py, pz, etc.
+    #print(f"Event {event_id}:")
+    #print(f"  Particle 1: px={p1['px']:.2f}, py={p1['py']:.2f}, pz={p1['pz']:.2f}")
+    #print(f"  Particle 2: px={p2['px']:.2f}, py={p2['py']:.2f}, pz={p2['pz']:.2f}")
+
+    # normalize vectors (can scale them later)
+    v1 = np.array([p1['px'], p1['py'], p1['pz']])
+    v2 = np.array([p2['px'], p2['py'], p2['pz']])
+    
+    # store both llps per event
+    llp_vectors.append((v1 / np.linalg.norm(v1), v2 / np.linalg.norm(v2)))
+
+def simulate_particle(origin, direction, z_target=22.5):
+    """
+    Simulate a particle traveling from 'origin' in 'direction',
+    and check whether it hits the detector at z = z_target.
+    
+    Returns the (x, y) hit point if inside detector, else None.
+    """
+    if direction[2] == 0:
+        return None  # Would never intersect the z = z_target plane
+
+    t = (z_target - origin[2]) / direction[2]
+    x = origin[0] + direction[0] * t
+    y = origin[1] + direction[1] * t
+    point = Point(x, y)
+
+    if c_detector.contains(point):
+        return (x, y)
+    else:
+        return None
+
+L1_list = []
+beta_gamma_list = []
+
+origin = np.array([0, 0, 0])
+z_target = 22.5
+
+for row in df.itertuples():
+    # direction = normalized momentum vector
+    v = np.array([row.px, row.py, row.pz])
+    v = v / np.linalg.norm(v)
+
+    hit = simulate_particle(origin, v, z_target=z_target)
+    if hit is not None:
+        x, y = hit
+        L1 = np.sqrt(x**2 + y**2 + z_target**2)
+        L1_list.append(L1)
+
+        # we know beta*gamma = momentum/mass for this particle
+        beta_gamma_list.append(row.momentum / row.mass)
+
+# Average cavern thickness
+T = 2.8 
+
+L1 = np.array(L1_list)
+# assume L2 = L1 + 2.8 meters
+L2 = L1 + T
+beta_gamma = np.array(beta_gamma_list)
+
+def decay_prob_in_cavern(L1, T, d):
+    """Decay probability inside cavern from L1 to L1+T for decay length d."""
+    return np.exp(-L1 / d) - np.exp(-(L1 + T) / d)
+
+# Define range of ctaus (in meters)
+ctau_values = np.logspace(-2, 5, 100) #1e-2 to 1e5 m
+avg_probs = []
+
+for ctau in ctau_values:
+    decay_prob = np.exp(-L1 /(beta_gamma * ctau)) - np.exp(-L2 /(beta_gamma * ctau))
+    avg_probs.append(decay_prob.mean())
+
+# plotting
+plt.figure(figsize=(10,6))
+plt.semilogx(ctau_values, avg_probs)
+plt.xlabel("Proper lifetime cτ [m]")
+plt.ylabel("Average decay probability in cavern")
+plt.title("LLP decay probability vs proper lifetime")
+# UNCOMMENT NEXT LINE TO ZOOM IN ON PEAK OF CURVE (customize as desired)
+#plt.xlim(1,10)
+plt.grid(True, which="both")
+#plt.legend(loc=0)
+plt.show()
